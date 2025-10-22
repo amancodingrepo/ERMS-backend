@@ -4,6 +4,8 @@ import * as http from "http";
 import mongoose from "mongoose";
 import { connectDB, disconnectDB } from "./db/mongoose";
 import contactRouter from "./routes/contact";
+import categoryRoutes from "./routes/category.routes";
+import reportRoutes from "./routes/report.routes";
 import express = require("express");
 
 const app = express();
@@ -13,6 +15,8 @@ app.use(cors({ origin: process.env.CORS_ORIGIN ?? "*" }));
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/", (_req, res) => res.send("Backend is running"));
 app.use("/api/contact", contactRouter);
+app.use("/api/categories", categoryRoutes);
+app.use("/api/reports", reportRoutes);
 
 app.get("/db-status", async (_req, res) => {
     const state = mongoose.connection.readyState;
