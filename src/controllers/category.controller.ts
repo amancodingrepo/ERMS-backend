@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import Category from "../models/category.model";
+import Report from "../models/report.model";
 
 function ok(message: string, data?: unknown) {
     return { success: true, message, data };
@@ -18,12 +19,27 @@ export async function getAllCategories(_req: Request, res: Response) {
     }
 }
 
-export async function getCategoryById(req: Request, res: Response) {
+export async function getCategoryBySlug(req: Request, res: Response) {
     try {
-        const { id } = req.params;
-        const category = await Category.findById(id).lean();
+        const { slug } = req.params;
+        const category = await Category.findOne({ slug }).lean();
         if (!category) return res.status(404).json(fail("Category not found"));
-        return res.json(ok("Category fetched", category));
+        
+        // Get reports for this category
+        const reports = await Report.find({ category: category._id })
+            .select('title slug summary publishDate imageUrl price createdAt')
+            .sort({ createdAt: -1 })
+            .lean();
+            
+        return res.json(ok("Category fetched", { 
+            category: {
+                ...category,
+                reports: {
+                    count: reports.length,
+                    items: reports
+                }
+            }
+        }));
     } catch (err) {
         return res.status(500).json(fail("Failed to fetch category"));
     }
@@ -31,12 +47,20 @@ export async function getCategoryById(req: Request, res: Response) {
 
 export async function createCategory(req: Request, res: Response) {
     try {
-        const { name, description } = req.body as { name?: string; description?: string };
+        const { name, description, thumbnailUrl } = req.body as { 
+            name?: string; 
+            description?: string; 
+            thumbnailUrl?: string; 
+        };
         if (!name || typeof name !== "string" || name.trim().length < 2) {
             return res.status(400).json(fail("Invalid name"));
         }
 
-        const created = await Category.create({ name: name.trim(), description });
+        const created = await Category.create({ 
+            name: name.trim(), 
+            description, 
+            thumbnailUrl 
+        });
         return res.status(201).json(ok("Category created", created));
     } catch (err: any) {
         if (err && err.code === 11000) {
@@ -48,16 +72,25 @@ export async function createCategory(req: Request, res: Response) {
 
 export async function updateCategory(req: Request, res: Response) {
     try {
-        const { id } = req.params;
-        const { name, description } = req.body as { name?: string; description?: string };
+        const { slug } = req.params;
+        const { name, description, thumbnailUrl } = req.body as { 
+            name?: string; 
+            description?: string; 
+            thumbnailUrl?: string; 
+        };
 
         if (name && (typeof name !== "string" || name.trim().length < 2)) {
             return res.status(400).json(fail("Invalid name"));
         }
 
-        const updated = await Category.findByIdAndUpdate(
-            id,
-            { $set: { ...(name ? { name: name.trim() } : {}), ...(description !== undefined ? { description } : {}) } },
+        const updateData: any = {};
+        if (name) updateData.name = name.trim();
+        if (description !== undefined) updateData.description = description;
+        if (thumbnailUrl !== undefined) updateData.thumbnailUrl = thumbnailUrl;
+
+        const updated = await Category.findOneAndUpdate(
+            { slug },
+            { $set: updateData },
             { new: true, runValidators: true }
         ).lean();
 
@@ -73,8 +106,8 @@ export async function updateCategory(req: Request, res: Response) {
 
 export async function deleteCategory(req: Request, res: Response) {
     try {
-        const { id } = req.params;
-        const deleted = await Category.findByIdAndDelete(id).lean();
+        const { slug } = req.params;
+        const deleted = await Category.findOneAndDelete({ slug }).lean();
         if (!deleted) return res.status(404).json(fail("Category not found"));
         return res.json(ok("Category deleted", deleted));
     } catch (err) {

@@ -1,5 +1,6 @@
 import mongoose from "mongoose";
-
+import dotenv from "dotenv";
+dotenv.config();
 const DEFAULT_MAX_RETRIES = 5;
 const BASE_BACKOFF_MS = 500;
 

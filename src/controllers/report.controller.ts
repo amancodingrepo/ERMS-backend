@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import Report from "../models/report.model";
+import Category from "../models/category.model";
 
 function ok(message: string, data?: unknown) {
     return { success: true, message, data };
@@ -14,35 +15,62 @@ export async function getAllReports(req: Request, res: Response) {
         const page = Math.max(1, Number(req.query.page ?? 1));
         const limit = Math.min(100, Math.max(1, Number(req.query.limit ?? 20)));
         const skip = (page - 1) * limit;
+        const categorySlug = req.query.category as string;
+        const search = req.query.search as string;
+
+        // Build query
+        let query: any = {};
+        
+        // Filter by category if provided
+        if (categorySlug) {
+            const category = await Category.findOne({ slug: categorySlug });
+            if (!category) {
+                return res.status(404).json(fail("Category not found"));
+            }
+            query.category = category._id;
+        }
+
+        // Add search functionality
+        if (search) {
+            query.$or = [
+                { title: { $regex: search, $options: "i" } },
+                { description: { $regex: search, $options: "i" } },
+                { summary: { $regex: search, $options: "i" } },
+                { "meta.keywords": { $in: [new RegExp(search, "i")] } }
+            ];
+        }
 
         const [items, total] = await Promise.all([
-            Report.find()
+            Report.find(query)
                 .sort({ createdAt: -1 })
                 .skip(skip)
                 .limit(limit)
-                .populate("category")
+                .populate("category", "name slug")
                 .lean(),
-            Report.countDocuments(),
+            Report.countDocuments(query),
         ]);
 
-        return res.json(
-            ok("Reports fetched", {
-                pagination: { page, limit, total, pages: Math.ceil(total / limit) },
-                count: items.length,
-                items,
-            })
-        );
+        const totalPages = Math.ceil(total / limit);
+
+        return res.json({
+            success: true,
+            pagination: { page, totalPages, totalReports: total },
+            data: items
+        });
     } catch (err) {
         return res.status(500).json(fail("Failed to fetch reports"));
     }
 }
 
-export async function getReportById(req: Request, res: Response) {
+export async function getReportBySlug(req: Request, res: Response) {
     try {
-        const { id } = req.params;
-        const report = await Report.findById(id).populate("category").lean();
+        const { slug } = req.params;
+        const report = await Report.findOne({ slug }).populate("category", "name slug").lean();
         if (!report) return res.status(404).json(fail("Report not found"));
-        return res.json(ok("Report fetched", report));
+        return res.json({
+            success: true,
+            report: report
+        });
     } catch (err) {
         return res.status(500).json(fail("Failed to fetch report"));
     }
@@ -50,14 +78,31 @@ export async function getReportById(req: Request, res: Response) {
 
 export async function createReport(req: Request, res: Response) {
     try {
-        const { title, category, description, status, reporterName, location, tags } = req.body as {
+        const { 
+            title, 
+            category, 
+            description, 
+            summary, 
+            publishDate, 
+            imageUrl, 
+            price, 
+            keyHighlights, 
+            tableOfContent, 
+            meta 
+        } = req.body as {
             title?: string;
             category?: string;
             description?: string;
-            status?: string;
-            reporterName?: string;
-            location?: string;
-            tags?: string[];
+            summary?: string;
+            publishDate?: string;
+            imageUrl?: string;
+            price?: number;
+            keyHighlights?: string[];
+            tableOfContent?: string[];
+            meta?: {
+                keywords?: string[];
+                seoDescription?: string;
+            };
         };
 
         if (!title || typeof title !== "string" || title.trim().length < 2) {
@@ -66,21 +111,30 @@ export async function createReport(req: Request, res: Response) {
         if (!category) {
             return res.status(400).json(fail("Category is required"));
         }
-        if (status && !["draft", "pending", "approved", "rejected"].includes(status)) {
-            return res.status(400).json(fail("Invalid status"));
+
+        // Find category by slug
+        const categoryDoc = await Category.findOne({ slug: category });
+        if (!categoryDoc) {
+            return res.status(404).json(fail("Category not found"));
         }
 
         const created = await Report.create({
             title: title.trim(),
-            category,
+            category: categoryDoc._id,
             description,
-            status,
-            reporterName,
-            location,
-            tags: Array.isArray(tags) ? tags : [],
+            summary,
+            publishDate: publishDate ? new Date(publishDate) : undefined,
+            imageUrl,
+            price,
+            keyHighlights: Array.isArray(keyHighlights) ? keyHighlights : [],
+            tableOfContent: Array.isArray(tableOfContent) ? tableOfContent : [],
+            meta: {
+                keywords: Array.isArray(meta?.keywords) ? meta.keywords : [],
+                seoDescription: meta?.seoDescription || ""
+            }
         });
 
-        const populated = await created.populate("category");
+        const populated = await created.populate("category", "name slug");
         return res.status(201).json(ok("Report created", populated));
     } catch (err) {
         return res.status(500).json(fail("Failed to create report"));
@@ -89,40 +143,64 @@ export async function createReport(req: Request, res: Response) {
 
 export async function updateReport(req: Request, res: Response) {
     try {
-        const { id } = req.params;
-        const { title, category, description, status, reporterName, location, tags } = req.body as {
+        const { slug } = req.params;
+        const { 
+            title, 
+            category, 
+            description, 
+            summary, 
+            publishDate, 
+            imageUrl, 
+            price, 
+            keyHighlights, 
+            tableOfContent, 
+            meta 
+        } = req.body as {
             title?: string;
             category?: string;
             description?: string;
-            status?: string;
-            reporterName?: string;
-            location?: string;
-            tags?: string[];
+            summary?: string;
+            publishDate?: string;
+            imageUrl?: string;
+            price?: number;
+            keyHighlights?: string[];
+            tableOfContent?: string[];
+            meta?: {
+                keywords?: string[];
+                seoDescription?: string;
+            };
         };
 
         if (title && (typeof title !== "string" || title.trim().length < 2)) {
             return res.status(400).json(fail("Invalid title"));
         }
-        if (status && !["draft", "pending", "approved", "rejected"].includes(status)) {
-            return res.status(400).json(fail("Invalid status"));
+
+        const updateData: any = {};
+        if (title) updateData.title = title.trim();
+        if (description !== undefined) updateData.description = description;
+        if (summary !== undefined) updateData.summary = summary;
+        if (publishDate !== undefined) updateData.publishDate = publishDate ? new Date(publishDate) : null;
+        if (imageUrl !== undefined) updateData.imageUrl = imageUrl;
+        if (price !== undefined) updateData.price = price;
+        if (Array.isArray(keyHighlights)) updateData.keyHighlights = keyHighlights;
+        if (Array.isArray(tableOfContent)) updateData.tableOfContent = tableOfContent;
+        if (meta) updateData.meta = meta;
+
+        // Handle category update
+        if (category) {
+            const categoryDoc = await Category.findOne({ slug: category });
+            if (!categoryDoc) {
+                return res.status(404).json(fail("Category not found"));
+            }
+            updateData.category = categoryDoc._id;
         }
 
-        const updated = await Report.findByIdAndUpdate(
-            id,
-            {
-                $set: {
-                    ...(title ? { title: title.trim() } : {}),
-                    ...(category ? { category } : {}),
-                    ...(description !== undefined ? { description } : {}),
-                    ...(status ? { status } : {}),
-                    ...(reporterName !== undefined ? { reporterName } : {}),
-                    ...(location !== undefined ? { location } : {}),
-                    ...(Array.isArray(tags) ? { tags } : {}),
-                },
-            },
+        const updated = await Report.findOneAndUpdate(
+            { slug },
+            { $set: updateData },
             { new: true, runValidators: true }
         )
-            .populate("category")
+            .populate("category", "name slug")
             .lean();
 
         if (!updated) return res.status(404).json(fail("Report not found"));
@@ -134,8 +212,8 @@ export async function updateReport(req: Request, res: Response) {
 
 export async function deleteReport(req: Request, res: Response) {
     try {
-        const { id } = req.params;
-        const deleted = await Report.findByIdAndDelete(id).lean();
+        const { slug } = req.params;
+        const deleted = await Report.findOneAndDelete({ slug }).lean();
         if (!deleted) return res.status(404).json(fail("Report not found"));
         return res.json(ok("Report deleted", deleted));
     } catch (err) {
@@ -143,26 +221,5 @@ export async function deleteReport(req: Request, res: Response) {
     }
 }
 
-export async function searchReports(req: Request, res: Response) {
-    try {
-        const query = String(req.query.query ?? "").trim();
-        if (!query) return res.json(ok("Search results", { count: 0, items: [] }));
-
-        const items = await Report.find({
-            $or: [
-                { title: { $regex: query, $options: "i" } },
-                { description: { $regex: query, $options: "i" } },
-                { tags: { $in: [new RegExp(query, "i")] } },
-            ],
-        })
-            .limit(50)
-            .populate("category")
-            .lean();
-
-        return res.json(ok("Search results", { count: items.length, items }));
-    } catch (err) {
-        return res.status(500).json(fail("Failed to search reports"));
-    }
-}
 
 
